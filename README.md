@@ -11,13 +11,13 @@ Focus on numerical variables for cleaner, more meaningful analysis
 
 Model includes the following predictors:
 
-age
+-`age`
 
-covid_symptoms (initial severity or count of symptoms)
+-`covid_symptoms` (initial severity or count of symptoms)
 
-household_income
+-`household_income`
 
-difficulty_with_expenses
+-`difficulty_with_expenses`
 
 These variables were found to have the strongest influence on predicting whether a respondent would suffer from Long COVID symptoms.
 
