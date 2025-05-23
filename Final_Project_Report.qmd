@@ -1,0 +1,1565 @@
+---
+title: "Long COVID-19 Analysis"
+author: "Kanishk Hari and Megan Ichinose"
+date: "5/15/24"
+format: html
+editor: visual
+---
+
+## Abstract
+
+We observed how multiple variables affected a person’s chances of feeling symptoms of Long COVID-19. Using numerical variables compared to categorical variables provided us with more valuable information, so we decided to narrow our project to utilize numerical variables only. The model which included all the relevant numerical variables (age, covid_symptoms, household_income, and difficulty_with_expenses) proved to have the most impact on predicting whether a respondent will suffer from long COVID. Some possible shortcomings of the dataset might be not considering employee status, religious attendance, and whether they were Hispanic or not, which tells us how often respondents could be exposed to COVID. 
+
+## Introduction
+
+1.  According to the CDC, 18% of all adults affected by COVID-19 experienced “long COVID,” in which adults felt the disease symptoms for three months or longer. However, the CDC only considered singular variables, such as age and gender. 
+
+2.  This project aims to consider multiple variables to predict whether an adult has experienced long COVID, which means that two or more variables could have more of a profound impact on determining whether an adult had experienced long COVID or not. 
+
+3.  The data we collected was predicting how variables such as age, covid_symptoms, household_income, and difficulty_with_expenses would affect the probability of someone contracting long COVID. 
+
+4.  Participant’s area, race, education, marital status, gender, birth year, rsv vaccine status, covid vaccine status, religious attendance, employment status, housing status, and medicare were collected, to name a few categories
+
+5.  The data was collected through individual surveys sent to participants
+
+\
+
+### Data
+
+```{r}
+#| label: import pulse final dataset
+
+library(readr)
+library(tidyverse)
+library(broom)
+library(yardstick)
+library(rsample)
+library(purrr)
+library(infer)
+library(janitor)
+library(rstanarm)
+library(broom.mixed)
+
+pulse_final <- readr::read_csv(here::here("Data", "pulse_final.csv"))
+
+```
+
+```{r}
+#| label: new dataset + filtering out NAs
+
+pulse_final_2 <- pulse_final |>
+  mutate(
+     age = 2024 - birth_year,
+      covid_long = if_else(covid_long == "Yes","Yes", "No") |>
+      as.factor() |>
+      relevel(ref = "No")
+
+  ) |>
+  filter(!is.na(gender_identity),
+         !is.na(rsv_vaccine),
+         !is.na(covid_vaccine),
+         !is.na(covid_ever),
+         !is.na(covid_symptoms),
+         !is.na(covid_long),
+         !is.na(household_income),
+         !is.na(employed),
+         !is.na(religious_attendance),
+         !is.na(difficulty_with_expenses),
+         !is.na(housing),
+         !is.na(medicare),
+         covid_long != "Never had COVID-19"
+         )
+```
+
+## Data Summary
+
+```{r}
+#| label: glimpse data
+pulse_final_2 |>
+  glimpse()
+```
+
+```{r}
+#| label: Graphical Summary of age
+ggplot(data = pulse_final_2,
+       mapping = aes(x = age)) +
+  geom_bar() +
+  labs(x = "Age",
+       y = "Number of Respondents")
+
+```
+
+```{r}
+#| label: Numerical Summary of covid_symptoms
+pulse_final_2 |>
+  tabyl(covid_symptoms) |>
+  adorn_pct_formatting(digits = 1)
+
+```
+
+```{r}
+#| label: Numerical Summary of difficulty_with_expenses
+pulse_final_2 |>
+  tabyl(difficulty_with_expenses) |>
+  adorn_pct_formatting(digits = 1)
+```
+
+```{r}
+#| label: Numerical Summary of household_income
+pulse_final_2 |>
+  tabyl(household_income) |>
+  adorn_pct_formatting(digits = 1)
+```
+
+```{r}
+#| label: split dataset into training and holdout sets
+
+set.seed(21319)
+covid_split <- initial_split(
+  pulse_final_2,
+  prop = 0.75 # 75% in training
+)
+covid_training <- training(covid_split)
+covid_holdout <- testing(covid_split)
+```
+
+```{r}
+#| label: logistic regression
+covid_logr <- glm(
+  covid_long ~ age + difficulty_with_expenses + household_income + covid_symptoms,
+  data = covid_training,
+  family = "binomial" # makes this logistic regression
+)
+
+covid_logr |>
+  tidy()
+```
+
+```{r}
+#| label: 08a code - predicting on holdout set
+
+ covid_logr_pred <- covid_logr |>
+   augment(newdata = covid_holdout,
+           type.predict = "response")
+
+ covid_logr_predictions <- covid_logr_pred |>
+   mutate(
+     predicted_class = if_else(
+       .fitted > 0.5, # more likely to have AD than not
+       "Yes", # value if TRUE
+       "No" # value if FALSE
+     ) |>
+       as.factor() |> # convert to factor
+       relevel(ref = "No") # define reference level
+  )
+```
+
+```{r}
+#| label: confusion matrix
+
+covid_logr_predictions |>
+  conf_mat(
+    truth = covid_long, # row variable
+    estimate = predicted_class # column variable
+  )
+
+```
+
+## Modeling
+
+```{r}
+#| label: glm-1  
+set.seed(8) # for jittering
+ggplot(data = covid_training, 
+       mapping = aes(x = age, 
+                     y = covid_long)) +
+  geom_jitter(color = "navy", size = 2, 
+              width = 0, height = 0.1) +
+  labs(x = "Age (years)",
+       y = "Covid Long") +
+  theme(
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 16)
+  )
+```
+
+```{r}
+#| label: get ROC curve
+covid_roc_curve <- covid_logr_predictions |>
+  roc_curve(truth = covid_long,
+            .fitted,
+            event_level = "second")
+```
+
+```{r}
+#| label: plot ROC curve
+autoplot(covid_roc_curve) +
+  theme(
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 16)
+  )
+```
+
+```{r}
+#| label: get AUC
+covid_logr_predictions |>
+  roc_auc(truth = covid_long,
+            .fitted,
+            event_level = "second")
+```
+
+```{r}
+#| label: brier score
+covid_logr_predictions |>
+  mutate(
+    pred_yes = 1 - .fitted
+  ) |>
+  brier_class(truth = covid_long,
+            pred_yes
+  )
+```
+
+```{r}
+#| label: jittered prediction plot - visualizing prediction errors
+set.seed(8) # for jittering
+ggplot(data = covid_logr_predictions, 
+       mapping = aes(x = .fitted, 
+                     y = covid_long)) +
+  geom_jitter(color = "navy", size = 2, 
+              width = 0, height = 0.1) +
+  labs(x = "Predicted Probability of Long COVID-19",
+       y = "Diagnosis") +
+  theme(
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 16)
+  )
+```
+
+```{r}
+#| label: kfold split
+set.seed(2848)
+covid_cv_split <- vfold_cv(
+  covid_training, # always use the training set
+  v = 10, # number of folds
+  repeats = 1 # only one set of 10 folds
+)
+```
+
+```{r}
+#| label: getting the training and holdout set
+
+covid_prediction <- function(split){
+
+train <- training(covid_split)
+valid <- testing(covid_split)
+
+ ## Don't forget the family = "binomial" argument!  
+  glm1 <- glm(covid_long ~ age + difficulty_with_expenses, data = train, family = "binomial")
+  glm2 <- glm(covid_long ~ age + household_income, data = train, family = "binomial")
+  glm3 <- glm(covid_long ~ age + covid_symptoms, data = train, family = "binomial")
+  glm4 <- glm(covid_long ~ age + covid_symptoms + difficulty_with_expenses, data = train, family = "binomial")
+  glm5 <- glm(covid_long ~ age + covid_symptoms + household_income, data = train, family = "binomial")
+  glm6 <- glm(covid_long ~ age + household_income + difficulty_with_expenses, data = train, family = "binomial")
+  glm7 <- glm(covid_long ~ age + covid_symptoms + household_income + difficulty_with_expenses, data = train, family = "binomial")
+  glm_null <- glm(covid_long ~ 1, data = train, family = "binomial") # always include the null model
+  
+  valid_predictions <- valid |>
+    mutate(
+  ## Don't forget the type = "response" argument!
+      pred1 = predict(glm1, newdata = valid, type = "response"),
+      pred2 = predict(glm2, newdata = valid, type = "response"),
+      pred3 = predict(glm3, newdata = valid, type = "response"),
+       pred4 = predict(glm4, newdata = valid, type = "response"),
+       pred5 = predict(glm5, newdata = valid, type = "response"),
+       pred6 = predict(glm6, newdata = valid, type = "response"),
+       pred7 = predict(glm7, newdata = valid, type = "response"),
+      pred_null = predict(glm_null, newdata = valid, type = "response")
+    )
+  
+  return(valid_predictions)
+}
+```
+
+```{r}
+#| label: map the predictions
+mapped_predictions <- map(
+ covid_cv_split$splits, # list to apply a function to
+  covid_prediction # function to apply
+)
+
+mapped_predictions[[1]] |>
+  select(pred1, pred2, pred3, pred4, pred5, pred6, pred7, pred_null, covid_long, everything()) |>
+  slice(c(1:3))
+```
+
+```{r}
+#| label: create df of predictions
+
+mapped_predictions_df <- mapped_predictions |>
+  bind_rows(
+    .id = "fold" # give an id column to know which fold
+  )
+
+mapped_predictions_df |>
+  dplyr::select(fold, area, covid_long, pred1, pred2, pred3, pred4, pred5, pred6, pred7, pred_null, everything()) |>
+  slice(c(3,8,15))
+```
+
+```{r}
+#| label: compute average AUC
+glm1_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred1,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred2,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+
+glm3_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred3,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred4,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred5,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred6,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred7,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred_null,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: viewing average AUC for training
+tibble(
+  model = c("Model 1", "Model 2", "Model 3","Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  AUC = c(glm1_average_auc, glm2_average_auc, glm3_average_auc, glm4_average_auc, glm5_average_auc, glm6_average_auc, glm7_average_auc, glm_null_average_auc)
+  )
+```
+
+```{r}
+#| label: compute average Brier for all models
+glm1_average_brier <- mapped_predictions_df |>
+  mutate(pred1_yes = 1 - pred1) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred1_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2_average_brier <- mapped_predictions_df |>
+  mutate(pred2_yes = 1 - pred2) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred2_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm3_average_brier <- mapped_predictions_df |>
+  mutate(pred3_yes = 1 - pred3) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred3_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4_average_brier <- mapped_predictions_df |>
+  mutate(pred4_yes = 1 - pred4) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred4_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5_average_brier <- mapped_predictions_df |>
+  mutate(pred5_yes = 1 - pred5) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred5_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6_average_brier <- mapped_predictions_df |>
+  mutate(pred6_yes = 1 - pred6) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred6_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7_average_brier <- mapped_predictions_df |>
+  mutate(pred7_yes = 1 - pred7) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred7_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_average_brier <- mapped_predictions_df |>
+  mutate(pred_null_yes = 1 - pred_null) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred_null_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: output average Brier
+
+tibble(
+  model = c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  Brier_score = c(glm1_average_brier, glm2_average_brier, glm3_average_brier, glm4_average_brier, glm5_average_brier, glm6_average_brier, glm7_average_brier, glm_null_average_brier)
+  )
+```
+
+```{r}
+#| label: predict logr probability
+#| code-line-numbers: "3"
+covid_logr_pred2 <- covid_logr |>
+  augment(newdata = covid_holdout,
+          type.predict = "response")
+
+covid_logr_pred2 |>
+  select(area, .fitted, everything()) |>
+  head(4)
+```
+
+```{r}
+#| label: look at class predictions
+covid_logr_predictions |>
+  select(area, .fitted, predicted_class, everything()) |>
+  head()
+```
+
+```{r}
+#| label: accuracy manually for logr
+covid_logr_predictions |>
+  mutate(
+    accurate = (covid_long == predicted_class) # logical
+  ) |>
+  summarize(accuracy = mean(accurate))
+```
+
+```{r}
+#| label: confusion matrix with yardstick
+covid_logr_predictions |>
+  conf_mat(
+    truth = covid_long, # column variable
+    estimate = predicted_class # row variable
+  )
+```
+
+### Modeling Results
+
+```{r}
+#| label: evaluating for holdout set
+covid_prediction <- function(split){
+
+train <- training(covid_split)
+valid <- testing(covid_split)
+
+ ## Don't forget the family = "binomial" argument!  
+  glm1v <- glm(covid_long ~ age + difficulty_with_expenses, data = valid, family = "binomial")
+  glm2v <- glm(covid_long ~ age + household_income, data = valid, family = "binomial")
+  glm3v <- glm(covid_long ~ age + covid_symptoms, data = valid, family = "binomial")
+  glm4v <- glm(covid_long ~ age + covid_symptoms + difficulty_with_expenses, data = valid, family = "binomial")
+  glm5v <- glm(covid_long ~ age + covid_symptoms + household_income, data = valid, family = "binomial")
+  glm6v <- glm(covid_long ~ age + household_income + difficulty_with_expenses, data = valid, family = "binomial")
+  glm7v <- glm(covid_long ~ age + covid_symptoms + household_income + difficulty_with_expenses, data = valid, family = "binomial")
+  glm_null_v <- glm(covid_long ~ 1, data = valid, family = "binomial") # always include the null model
+  
+  valid_predictions <- valid |>
+    mutate(
+  ## Don't forget the type = "response" argument!
+      pred1v = predict(glm1v, newdata = valid, type = "response"),
+      pred2v = predict(glm2v, newdata = valid, type = "response"),
+      pred3v = predict(glm3v, newdata = valid, type = "response"),
+       pred4v = predict(glm4v, newdata = valid, type = "response"),
+       pred5v = predict(glm5v, newdata = valid, type = "response"),
+       pred6v = predict(glm6v, newdata = valid, type = "response"),
+       pred7v = predict(glm7v, newdata = valid, type = "response"),
+      pred_null_v = predict(glm_null_v, newdata = valid, type = "response")
+    )
+  
+  return(valid_predictions)
+}
+```
+
+```{r}
+#| label: map the holdout predictions
+mapped_predictions <- map(
+ covid_cv_split$splits, # list to apply a function to
+  covid_prediction # function to apply
+)
+
+mapped_predictions[[1]] |>
+  select(pred1v, pred2v, pred3v, pred4v, pred5v, pred6v, pred7v, pred_null_v, covid_long, everything()) |>
+  slice(c(1:3))
+```
+
+```{r}
+#| label: create df of predictions for holdout set
+
+mapped_predictions_df <- mapped_predictions |>
+  bind_rows(
+    .id = "fold" # give an id column to know which fold
+  )
+
+mapped_predictions_df |>
+  dplyr::select(fold, area, covid_long, pred1v, pred2v, pred3v, pred4v, pred5v, pred6v, pred7v, pred_null_v, everything()) |>
+  slice(c(3,8,15))
+```
+
+```{r}
+#| label: compute average AUC for holdout
+glm1v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred1v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred2v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+
+glm3v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred3v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred4v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred5v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred6v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred7v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred_null_v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: viewing average AUC for holdout
+tibble(
+  model = c("Model 1", "Model 2", "Model 3","Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  AUC = c(glm1v_average_auc, glm2v_average_auc, glm3v_average_auc, glm4v_average_auc, glm5v_average_auc, glm6v_average_auc, glm7v_average_auc, glm_null_v_average_auc)
+  )
+```
+
+```{r}
+#| label: compute average Brier for all models (holdout)
+glm1v_average_brier <- mapped_predictions_df |>
+  mutate(pred1v_yes = 1 - pred1v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred1v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2v_average_brier <- mapped_predictions_df |>
+  mutate(pred2v_yes = 1 - pred2v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred2v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm3v_average_brier <- mapped_predictions_df |>
+  mutate(pred3v_yes = 1 - pred3v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred3v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4v_average_brier <- mapped_predictions_df |>
+  mutate(pred4v_yes = 1 - pred4v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred4v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5v_average_brier <- mapped_predictions_df |>
+  mutate(pred5v_yes = 1 - pred5v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred5v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6v_average_brier <- mapped_predictions_df |>
+  mutate(pred6v_yes = 1 - pred6v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred6v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7v_average_brier <- mapped_predictions_df |>
+  mutate(pred7v_yes = 1 - pred7v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred7v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_v_average_brier <- mapped_predictions_df |>
+  mutate(pred_null_v_yes = 1 - pred_null_v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred_null_v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: output average Brier (holdout)
+
+tibble(
+  model = c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  Brier_score = c(glm1v_average_brier, glm2v_average_brier, glm3v_average_brier, glm4v_average_brier, glm5v_average_brier, glm6v_average_brier, glm7v_average_brier, glm_null_v_average_brier)
+  )
+```
+
+## Conclusion and Discussion
+
+From our AUC and Brier Models, we deduced that Model 7 (age, covid_symptoms, household_income, and difficulty_with_expenses) is the best option to choose.  
+
+Some possible shortcomings of the dataset might be not considering employee status or religious attendance, which tells us how often respondents could be exposed to COVID. Moreover, we did not consider whether the person was Hispanic or not, which also could have affected the results of our data. 
+
+## References
+
+<https://www.census.gov/programs-surveys/household-pulse-survey/data/datasets.html>
+
+## Appendix
+
+```{r}
+#| label: import pulse final dataset into appendix
+#| eval: FALSE
+
+#import dataset & libraries
+
+library(readr)
+library(tidyverse)
+library(broom)
+library(yardstick)
+library(rsample)
+library(purrr)
+library(infer)
+library(janitor)
+library(rstanarm)
+library(broom.mixed)
+
+pulse_final <- readr::read_csv(here::here("Data", "pulse_final.csv"))
+
+```
+
+```{r}
+#| label: new dataset + filtering out Nos and NAs from covid_long, and NAs from rest of the variables
+#| eval: FALSE
+
+#create new dataset with age variable, factoring out Nos and Never had Covid, and filtering NAs from dataset
+
+pulse_final_2 <- pulse_final |>
+  mutate(
+     age = 2024 - birth_year,
+      covid_long = if_else(covid_long == "Yes","Yes", "No") |>
+      as.factor() |>
+      relevel(ref = "No")
+
+  ) |>
+  filter(!is.na(gender_identity),
+         !is.na(rsv_vaccine),
+         !is.na(covid_vaccine),
+         !is.na(covid_ever),
+         !is.na(covid_symptoms),
+         !is.na(covid_long),
+         !is.na(household_income),
+         !is.na(employed),
+         !is.na(religious_attendance),
+         !is.na(difficulty_with_expenses),
+         !is.na(housing),
+         !is.na(medicare),
+         covid_long != "Never had COVID-19"
+         )
+```
+
+```{r}
+#| label: glimpse data using glimpse
+#| eval: FALSE
+pulse_final_2 |>
+  glimpse()
+```
+
+```{r}
+#| label: Graphical Summary of age using ggplot
+#| eval: FALSE
+ggplot(data = pulse_final_2,
+       mapping = aes(x = age)) +
+  geom_bar() +
+  labs(x = "Age",
+       y = "Number of Respondents")
+
+```
+
+```{r}
+#| label: Numerical Summary of covid_symptoms using tabyl
+#| eval: FALSE
+pulse_final_2 |>
+  tabyl(covid_symptoms) |>
+  adorn_pct_formatting(digits = 1)
+
+```
+
+```{r}
+#| label: Numerical Summary of difficulty_with_expenses using tabyl
+#| eval: FALSE
+pulse_final_2 |>
+  tabyl(difficulty_with_expenses) |>
+  adorn_pct_formatting(digits = 1)
+```
+
+```{r}
+#| label: Numerical Summary of household_income using tabyl
+#| eval: FALSE
+pulse_final_2 |>
+  tabyl(household_income) |>
+  adorn_pct_formatting(digits = 1)
+```
+
+```{r}
+#| label: split dataset into training and holdout sets (75% of data in training)
+#| eval: FALSE
+
+set.seed(21319)
+covid_split <- initial_split(
+  pulse_final_2,
+  prop = 0.75 # 75% in training
+)
+covid_training <- training(covid_split)
+covid_holdout <- testing(covid_split)
+
+```
+
+```{r}
+#| label: logistic regression model using all 4 numerical variables chosen
+#| eval: FALSE
+covid_logr <- glm(
+  covid_long ~ age + difficulty_with_expenses + household_income + covid_symptoms,
+  data = covid_training,
+  family = "binomial" # makes this logistic regression
+)
+
+covid_logr |>
+  tidy()
+```
+
+```{r}
+#| label: 08a code - predicting on holdout set using logistic regression
+#| eval: FALSE
+
+ covid_logr_pred <- covid_logr |>
+   augment(newdata = covid_holdout,
+           type.predict = "response")
+
+ covid_logr_predictions <- covid_logr_pred |>
+   mutate(
+     predicted_class = if_else(
+       .fitted > 0.5, # more likely to have AD than not
+       "Yes", # value if TRUE
+       "No" # value if FALSE
+     ) |>
+       as.factor() |> # convert to factor
+       relevel(ref = "No") # define reference level
+  )
+```
+
+```{r}
+#| label: confusion matrix from code above
+#| eval: FALSE
+
+
+covid_logr_predictions |>
+  conf_mat(
+    truth = covid_long, # row variable
+    estimate = predicted_class # column variable
+  )
+
+```
+
+```{r}
+#| label: logistic regression model for training set with ggplot
+#| eval: FALSE
+set.seed(8) # for jittering
+ggplot(data = covid_training, 
+       mapping = aes(x = age, 
+                     y = covid_long)) +
+  geom_jitter(color = "navy", size = 2, 
+              width = 0, height = 0.1) +
+  labs(x = "Age (years)",
+       y = "Covid Long") +
+  theme(
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 16)
+  )
+```
+
+```{r}
+#| label: get ROC curve using roc_curve
+#| eval: FALSE
+covid_roc_curve <- covid_logr_predictions |>
+  roc_curve(truth = covid_long,
+            .fitted,
+            event_level = "second")
+```
+
+```{r}
+#| label: plot ROC curve using autoplot
+#| eval: FALSE
+autoplot(covid_roc_curve) +
+  theme(
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 16)
+  )
+```
+
+```{r}
+#| label: get AUC using roc_auc
+#| eval: FALSE
+covid_logr_predictions |>
+  roc_auc(truth = covid_long,
+            .fitted,
+            event_level = "second")
+```
+
+```{r}
+#| label: brier score predictions using brier_class
+#| eval: FALSE
+covid_logr_predictions |>
+  mutate(
+    pred_yes = 1 - .fitted
+  ) |>
+  brier_class(truth = covid_long,
+            pred_yes
+  )
+```
+
+```{r}
+#| label: jittered prediction plot - visualizing prediction errors using ggplot
+#| eval: FALSE
+set.seed(8) # for jittering
+ggplot(data = covid_logr_predictions, 
+       mapping = aes(x = .fitted, 
+                     y = covid_long)) +
+  geom_jitter(color = "navy", size = 2, 
+              width = 0, height = 0.1) +
+  labs(x = "Predicted Probability of Long COVID-19",
+       y = "Diagnosis") +
+  theme(
+    axis.title = element_text(size = 24),
+    axis.text = element_text(size = 16)
+  )
+```
+
+```{r}
+#| label: kfold split using vfold_cv
+#| eval: FALSE
+set.seed(2848)
+covid_cv_split <- vfold_cv(
+  covid_training, # always use the training set
+  v = 10, # number of folds
+  repeats = 1 # only one set of 10 folds
+)
+```
+
+```{r}
+#| label: getting the training and holdout set and creating logistic regression models (training set first)
+#| eval: FALSE
+
+covid_prediction <- function(split){
+
+train <- training(covid_split)
+valid <- testing(covid_split)
+
+ ## Don't forget the family = "binomial" argument!  
+  glm1 <- glm(covid_long ~ age + difficulty_with_expenses, data = train, family = "binomial")
+  glm2 <- glm(covid_long ~ age + household_income, data = train, family = "binomial")
+  glm3 <- glm(covid_long ~ age + covid_symptoms, data = train, family = "binomial")
+  glm4 <- glm(covid_long ~ age + covid_symptoms + difficulty_with_expenses, data = train, family = "binomial")
+  glm5 <- glm(covid_long ~ age + covid_symptoms + household_income, data = train, family = "binomial")
+  glm6 <- glm(covid_long ~ age + household_income + difficulty_with_expenses, data = train, family = "binomial")
+  glm7 <- glm(covid_long ~ age + covid_symptoms + household_income + difficulty_with_expenses, data = train, family = "binomial")
+  glm_null <- glm(covid_long ~ 1, data = train, family = "binomial") # always include the null model
+  
+  valid_predictions <- valid |>
+    mutate(
+  ## Don't forget the type = "response" argument!
+      pred1 = predict(glm1, newdata = valid, type = "response"),
+      pred2 = predict(glm2, newdata = valid, type = "response"),
+      pred3 = predict(glm3, newdata = valid, type = "response"),
+       pred4 = predict(glm4, newdata = valid, type = "response"),
+       pred5 = predict(glm5, newdata = valid, type = "response"),
+       pred6 = predict(glm6, newdata = valid, type = "response"),
+       pred7 = predict(glm7, newdata = valid, type = "response"),
+      pred_null = predict(glm_null, newdata = valid, type = "response")
+    )
+  
+  return(valid_predictions)
+}
+```
+
+```{r}
+#| label: map the predictions using map
+#| eval: FALSE
+mapped_predictions <- map(
+ covid_cv_split$splits, # list to apply a function to
+  covid_prediction # function to apply
+)
+
+mapped_predictions[[1]] |>
+  select(pred1, pred2, pred3, pred4, pred5, pred6, pred7, pred_null, covid_long, everything()) |>
+  slice(c(1:3))
+```
+
+```{r}
+#| label: create df of predictions using mapped predictions
+#| eval: FALSE
+
+mapped_predictions_df <- mapped_predictions |>
+  bind_rows(
+    .id = "fold" # give an id column to know which fold
+  )
+
+mapped_predictions_df |>
+  dplyr::select(fold, area, covid_long, pred1, pred2, pred3, pred4, pred5, pred6, pred7, pred_null, everything()) |>
+  slice(c(3,8,15))
+```
+
+```{r}
+#| label: compute average AUC using roc_auc
+#| eval: FALSE
+glm1_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred1,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred2,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+
+glm3_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred3,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred4,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred5,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred6,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred7,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred_null,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: viewing average AUC for training using tibble
+#| eval: FALSE
+tibble(
+  model = c("Model 1", "Model 2", "Model 3","Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  AUC = c(glm1_average_auc, glm2_average_auc, glm3_average_auc, glm4_average_auc, glm5_average_auc, glm6_average_auc, glm7_average_auc, glm_null_average_auc)
+  )
+```
+
+```{r}
+#| label: compute average Brier for all models with folds using brier_class
+#| eval: FALSE
+glm1_average_brier <- mapped_predictions_df |>
+  mutate(pred1_yes = 1 - pred1) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred1_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2_average_brier <- mapped_predictions_df |>
+  mutate(pred2_yes = 1 - pred2) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred2_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm3_average_brier <- mapped_predictions_df |>
+  mutate(pred3_yes = 1 - pred3) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred3_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4_average_brier <- mapped_predictions_df |>
+  mutate(pred4_yes = 1 - pred4) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred4_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5_average_brier <- mapped_predictions_df |>
+  mutate(pred5_yes = 1 - pred5) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred5_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6_average_brier <- mapped_predictions_df |>
+  mutate(pred6_yes = 1 - pred6) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred6_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7_average_brier <- mapped_predictions_df |>
+  mutate(pred7_yes = 1 - pred7) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred7_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_average_brier <- mapped_predictions_df |>
+  mutate(pred_null_yes = 1 - pred_null) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred_null_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: output average Brier using tibble
+#| eval: FALSE
+
+tibble(
+  model = c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  Brier_score = c(glm1_average_brier, glm2_average_brier, glm3_average_brier, glm4_average_brier, glm5_average_brier, glm6_average_brier, glm7_average_brier, glm_null_average_brier)
+  )
+```
+
+```{r}
+#| label: predict logr probability using augment 
+#| code-line-numbers: "3"
+#| eval: FALSE
+covid_logr_pred2 <- covid_logr |>
+  augment(newdata = covid_holdout,
+          type.predict = "response")
+
+covid_logr_pred2 |>
+  select(area, .fitted, everything()) |>
+  head(4)
+```
+
+```{r}
+#| label: look at class predictions using select
+#| eval: FALSE
+covid_logr_predictions |>
+  select(area, .fitted, predicted_class, everything()) |>
+  head()
+```
+
+```{r}
+#| label: accuracy manually for logr using mutate
+#| eval: FALSE
+covid_logr_predictions |>
+  mutate(
+    accurate = (covid_long == predicted_class) # logical
+  ) |>
+  summarize(accuracy = mean(accurate))
+```
+
+```{r}
+#| label: confusion matrix with yardstick (from lecture)
+#| eval: FALSE
+covid_logr_predictions |>
+  conf_mat(
+    truth = covid_long, # column variable
+    estimate = predicted_class # row variable
+  )
+```
+
+```{r}
+#| label: evaluating for holdout set (same step for training, but using holdout)
+#| eval: FALSE
+covid_prediction <- function(split){
+
+train <- training(covid_split)
+valid <- testing(covid_split)
+
+ ## Don't forget the family = "binomial" argument!  
+  glm1v <- glm(covid_long ~ age + difficulty_with_expenses, data = valid, family = "binomial")
+  glm2v <- glm(covid_long ~ age + household_income, data = valid, family = "binomial")
+  glm3v <- glm(covid_long ~ age + covid_symptoms, data = valid, family = "binomial")
+  glm4v <- glm(covid_long ~ age + covid_symptoms + difficulty_with_expenses, data = valid, family = "binomial")
+  glm5v <- glm(covid_long ~ age + covid_symptoms + household_income, data = valid, family = "binomial")
+  glm6v <- glm(covid_long ~ age + household_income + difficulty_with_expenses, data = valid, family = "binomial")
+  glm7v <- glm(covid_long ~ age + covid_symptoms + household_income + difficulty_with_expenses, data = valid, family = "binomial")
+  glm_null_v <- glm(covid_long ~ 1, data = valid, family = "binomial") # always include the null model
+  
+  valid_predictions <- valid |>
+    mutate(
+  ## Don't forget the type = "response" argument!
+      pred1v = predict(glm1v, newdata = valid, type = "response"),
+      pred2v = predict(glm2v, newdata = valid, type = "response"),
+      pred3v = predict(glm3v, newdata = valid, type = "response"),
+       pred4v = predict(glm4v, newdata = valid, type = "response"),
+       pred5v = predict(glm5v, newdata = valid, type = "response"),
+       pred6v = predict(glm6v, newdata = valid, type = "response"),
+       pred7v = predict(glm7v, newdata = valid, type = "response"),
+      pred_null_v = predict(glm_null_v, newdata = valid, type = "response")
+    )
+  
+  return(valid_predictions)
+}
+```
+
+```{r}
+#| label: map the holdout predictions using map
+#| eval: FALSE
+mapped_predictions <- map(
+ covid_cv_split$splits, # list to apply a function to
+  covid_prediction # function to apply
+)
+
+mapped_predictions[[1]] |>
+  select(pred1v, pred2v, pred3v, pred4v, pred5v, pred6v, pred7v, pred_null_v, covid_long, everything()) |>
+  slice(c(1:3))
+```
+
+```{r}
+#| label: create df of predictions for holdout set using mapped predictions
+#| eval: FALSE
+
+mapped_predictions_df <- mapped_predictions |>
+  bind_rows(
+    .id = "fold" # give an id column to know which fold
+  )
+
+mapped_predictions_df |>
+  dplyr::select(fold, area, covid_long, pred1v, pred2v, pred3v, pred4v, pred5v, pred6v, pred7v, pred_null_v, everything()) |>
+  slice(c(3,8,15))
+```
+
+```{r}
+#| label: compute average AUC for holdout using roc_auc
+#| eval: FALSE
+glm1v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred1v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred2v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+
+glm3v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred3v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred4v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred5v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred6v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred7v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_v_average_auc <- mapped_predictions_df |>
+  group_by(fold) |>
+  roc_auc(
+    truth = covid_long,
+    pred_null_v,
+    event_level = "second"
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: viewing average AUC for holdout using tibble
+#| eval: FALSE
+tibble(
+  model = c("Model 1", "Model 2", "Model 3","Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  AUC = c(glm1v_average_auc, glm2v_average_auc, glm3v_average_auc, glm4v_average_auc, glm5v_average_auc, glm6v_average_auc, glm7v_average_auc, glm_null_v_average_auc)
+  )
+```
+
+```{r}
+#| label: compute average Brier for all models (using holdout set now)
+#| eval: FALSE
+glm1v_average_brier <- mapped_predictions_df |>
+  mutate(pred1v_yes = 1 - pred1v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred1v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm2v_average_brier <- mapped_predictions_df |>
+  mutate(pred2v_yes = 1 - pred2v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred2v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm3v_average_brier <- mapped_predictions_df |>
+  mutate(pred3v_yes = 1 - pred3v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred3v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm4v_average_brier <- mapped_predictions_df |>
+  mutate(pred4v_yes = 1 - pred4v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred4v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm5v_average_brier <- mapped_predictions_df |>
+  mutate(pred5v_yes = 1 - pred5v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred5v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm6v_average_brier <- mapped_predictions_df |>
+  mutate(pred6v_yes = 1 - pred6v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred6v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm7v_average_brier <- mapped_predictions_df |>
+  mutate(pred7v_yes = 1 - pred7v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred7v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+
+glm_null_v_average_brier <- mapped_predictions_df |>
+  mutate(pred_null_v_yes = 1 - pred_null_v) |>
+  group_by(fold) |>
+  brier_class(
+    truth = covid_long,
+    pred_null_v_yes
+  ) |>
+  pull(.estimate) |>
+  mean()
+```
+
+```{r}
+#| label: output average Brier (with the holdout set)
+#| eval: FALSE
+
+tibble(
+  model = c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5", "Model 6", "Model 7", "Null Model"),
+  Brier_score = c(glm1v_average_brier, glm2v_average_brier, glm3v_average_brier, glm4v_average_brier, glm5v_average_brier, glm6v_average_brier, glm7v_average_brier, glm_null_v_average_brier)
+  )
+```
